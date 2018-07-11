@@ -1,25 +1,33 @@
 extern crate tokio;
-extern crate tokio_uds;
+extern crate futures;
+extern crate tokio_codec;
 #[macro_use]
 extern crate serde_derive;
 extern crate bincode;
-extern crate tempdir;
+extern crate bytes;
 
 use bincode::{deserialize, serialize};
 
 use tokio::prelude::*;
-use tokio::net::{TcpStream, TcpListener};
-use tokio_uds::*;
 use tokio::io;
+use tokio::net;
+use tokio_codec::*;
+use bytes::{BufMut, BytesMut};
 
-use std::net::SocketAddr;
+use std::env;
 
-use std::time::{Duration, SystemTime};
+fn main() {
+//    let a = env::args().skip(1).collect::<Vec<_>>();
+//    match a.first().unwrap().as_str() {
+//        "client" => client(),
+//        "server" => server(),
+//        _ => panic!("failed"),
+//    };
+}
 
-use std::path::*;
-
-// mod trash;
-// use std::os::unix::net::UnixStream;
+struct MessageCodec {
+    vec_length: u32,// Length of the receive vector
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 enum Message {
@@ -32,110 +40,64 @@ enum Message {
 struct Process {}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct Seed {}
+struct Seed {
+    x: i32,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct Sate {}
-
-fn main() {
-    client();
+struct Sate {
+    y: Vec<f32>,
 }
 
-#[test]
-fn server()
-{
-    let listener = network::create_tcp_listener("127.0.0.1:6666");
-    // let listener = network::create_uds_listener("socket");
-    let server = listener.incoming().for_each(move |stream| {
-        let read_future = io::read_to_end(stream, Vec::new())
-            .into_future()
-            .and_then(|(_, bytes)| {
-                let msg: Message = deserialize(&bytes).unwrap();
-                println!("{:?}", msg);
-                match msg {
-                    Message::processMsg(process) => {
-                        //
+impl MessageCodec {
+    fn new() -> MessageCodec {
+        MessageCodec { vec_length: 0 }
+    }
 
-                    }
-                    Message::seedMsg(seed) => {
-                        //
+    fn number_to_two_vecu8(num: u32, &mut vec: Vec<u8>) {
+        assert!(num >= (1 << 16));
+        let vec = vec![(num / 256) as u8, (num % 256) as u8];
+    }
 
-                    }
-                    Message::stateMsg(sate) => {
-                        //
-                    }
-                    _ => {
-                        println!("error");
-                    }
-                }
-                Ok(())
-            }).map_err(|e| println!("{:?}", e));
-        tokio::spawn(read_future);
+    fn two_vecu8_to_number(vec: Vec<u8>, &mut num: u32) {
+        assert_eq!(vec.len(), 2);
+        let num = (vec[0] * 256 + vec[1]) as u32;
+    }
+}
+
+impl Encoder for MessageCodec {
+    type Item = Message;
+    type Error = io::Error;
+    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        let x = serialize(&item).unwrap();
+        let encoder =
+        let dst = BytesMut::from(x);
         Ok(())
-    }).map_err(|e| println!("{:?}", e));
-    tokio::run(server);
+    }
+}
+
+impl Decoder for MessageCodec {
+    type Item = Message;
+    type Error = io::Error;
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        Ok(deserialize(&src.to_vec()).unwrap())
+    }
+//    fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error>
+//    {}
 }
 
 
-fn client()
-{
-    let mut stream = network::connect_tcp("127.0.0.1:6666");
-    // let mut stream = network::connect_uds("socket");
-    let msg = Message::processMsg(Process {});
-    let one_sec = Duration::from_secs(10);
-    let sys_time = SystemTime::now();
-    let mut times = 0;
-    loop {
-        let _ = stream.write_all(&(serialize(&msg).unwrap())[..]);
-        times += 1;
-        if sys_time.elapsed().unwrap() >= one_sec { break; }
-    }
-    println!("{}", times);
-//    let addr: SocketAddr = "127.0.0.1:6666".parse().unwrap();
-//    let mut stream = TcpStream::connect(&addr);
-//    let client = stream.into_future()
-//        .and_then(|mut socket| {
-//            let msg = Message::processMsg(Process {});
-//            let _ = socket.write_all(&(serialize(&msg).unwrap())[..]);
-//            Ok(())
-//        }).map_err(|e| { println!("{:?}", e) });
-//    tokio::run(client);
+fn server() {
+    let socket_addr = "127.0.0.1:6666".parse::<std::net::SocketAddr>().unwrap();
+    let listener = net::TcpListener::bind(&socket_addr).unwrap();
+//    let done = listener.incoming().for_each(|tcp_stream| {
+//        let framed = MessageStream.framed(tcp_stream);
+//        let (_writer, reader) = framed.split();
+//        reader.for_each();
+//    });
 }
 
-
-mod network {
-    extern crate tokio;
-    extern crate tokio_uds;
-    extern crate tempdir;
-
-    use tokio::prelude::*;
-    use tokio::net::TcpListener;
-    use tokio_uds::UnixListener;
-
-    use std::net::TcpStream;
-    use std::os::unix::net::UnixStream;
-    use std::net::SocketAddr;
-    use std::path::Path;
-
-    pub fn create_tcp_listener(socket_addr: &str) -> TcpListener {
-        let socket_addr = socket_addr.parse::<SocketAddr>().unwrap();
-        return TcpListener::bind(&socket_addr).unwrap();
-    }
-
-    pub fn create_uds_listener(socket_name: &str) -> UnixListener {
-        let socket_name = ["./", socket_name].join("");
-        let path = Path::new(&socket_name);
-        return UnixListener::bind(path).unwrap();
-    }
-
-    pub fn connect_tcp(socket_addr: &str) -> TcpStream {
-        let addr: SocketAddr = socket_addr.parse().unwrap();
-        return TcpStream::connect(&addr).unwrap();
-    }
-
-    pub fn connect_uds(socket_name: &str) -> UnixStream {
-        let socket_name = ["./", socket_name].join("");
-        let path = Path::new(&socket_name);
-        return UnixStream::connect(path).unwrap();
-    }
+fn client() {
+    let addr = "127.0.0.1:6666".parse::<std::net::SocketAddr>().unwrap();
+    let mut tcp_connect = net::TcpStream::connect(&addr);
 }

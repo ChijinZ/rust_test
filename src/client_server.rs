@@ -1,133 +1,109 @@
 extern crate tokio;
-extern crate tokio_uds;
+extern crate futures;
+extern crate tokio_codec;
 #[macro_use]
 extern crate serde_derive;
 extern crate bincode;
-extern crate tempdir;
+extern crate bytes;
 
 use bincode::{deserialize, serialize};
 
 use tokio::prelude::*;
-use tokio::net::*;
-use tokio_uds::UnixListener;
 use tokio::io;
+use tokio::net;
+use tokio_codec::*;
+use bytes::{BufMut, BytesMut};
 
-use std::net::SocketAddr;
+fn main() {
+    client();
+}
 
-use std::time::{Duration, SystemTime};
+struct MessageStream;
 
-use std::path::*;
+#[derive(Serialize, Deserialize, Debug, Clone)]
+enum Message {
+    processMsg(Process),
+    seedMsg(Seed),
+    stateMsg(Sate),
+}
 
-use std::os::unix::net::UnixStream;
-mod client_server {
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct Process {}
 
-    #[derive(Serialize, Deserialize, Debug)]
-    enum Message {
-        processMsg(Process),
-        seedMsg(Seed),
-        stateMsg(Sate),
-    }
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct Seed {}
 
-    #[derive(Serialize, Deserialize, Debug)]
-    struct Process {}
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct Sate {}
 
-    #[derive(Serialize, Deserialize, Debug)]
-    struct Seed {}
-
-    #[derive(Serialize, Deserialize, Debug)]
-    struct Sate {}
-
-    fn main() {
-        client();
-    }
-
-    #[test]
-    fn server()
+impl Encoder for MessageStream {
+    type Item = Message;
+    type Error = io::Error;
+    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error>
     {
-        let listener = network::create_tcp_listener("127.0.0.1:6666");
-        // let listener = network::create_uds_listener("socket");
-        let server = listener.incoming().for_each(move |stream| {
-            let read_future = io::read_to_end(stream, Vec::new())
-                .into_future()
-                .and_then(|(_, bytes)| {
-                    let msg: Message = deserialize(&bytes).unwrap();
-                    println!("{:?}", msg);
-                    match msg {
-                        Message::processMsg(process) => {
-                            //
-                        }
-                        Message::seedMsg(seed) => {
-                            //
-                        }
-                        Message::stateMsg(sate) => {
-                            //
-                        }
-                        _ => {
-                            println!("error");
-                        }
-                    }
-                    Ok(())
-                }).map_err(|e| println!("{:?}", e));
-            tokio::spawn(read_future);
+        let dst = BytesMut::from(serialize(&item).unwrap());
+        Ok(())
+    }
+}
+
+impl Decoder for MessageStream {
+    type Item = Message;
+    type Error = io::Error;
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error>
+    {
+        Ok(deserialize(&src.to_vec()).unwrap())
+    }
+}
+
+
+#[test]
+fn server() {
+    let socket_addr = "127.0.0.1:6666".parse::<std::net::SocketAddr>().unwrap();
+    let listener = net::TcpListener::bind(&socket_addr).unwrap();
+    // let listener = network::create_uds_listener("socket");
+    let server = listener.incoming().for_each(move |stream| {
+        let read_future = io::read_to_end(stream, Vec::new())
+            .and_then(|(_, bytes)| {
+                println!("{:?}", bytes);
+                let (tx, rx) = futures::sync::mpsc::unbounded();
+                tx.unbounded_send("2").unwrap();
+                println!("sended");
+                Ok(())
+            }).map_err(|e| println!("{:?}", e));
+        tokio::spawn(read_future);
+        Ok(())
+    }).map_err(|e| println!("{:?}", e));
+    tokio::run(server);
+}
+
+//fn client() {
+//    let addr = "127.0.0.1:6666".parse::<std::net::SocketAddr>().unwrap();
+//    let mut tcp_connect = net::TcpStream::connect(&addr);
+//    let write_stream = tcp_connect.map(|mut tcp_stream| {
+//        let (sink, mut stream) = MessageStream.framed(tcp_stream).split();
+//
+//    });
+//    //.flatten_stream();
+//}
+
+fn client(){
+    let addr = "127.0.0.1:6666".parse::<std::net::SocketAddr>().unwrap();
+    let mut tcp_connect = net::TcpStream::connect(&addr);
+    let send = tcp_connect.map(|mut stream| {
+        let (reader,mut writer)=stream.split();
+        let _ = writer.write_all(&vec![1, 1][..]).unwrap();
+        println!("already write");
+        reader
+    }).and_then(|mut stream|{
+        let reader = io::read_to_end(stream, Vec::new())
+            .and_then(|(_, bytes)| {
+            println!("{:?}", bytes);
             Ok(())
         }).map_err(|e| println!("{:?}", e));
-        tokio::run(server);
-    }
-
-
-    fn client()
-    {
-        let mut stream = network::connect_tcp("127.0.0.1:6666");
-        // let mut stream = network::connect_uds("socket");
-        let msg = Message::processMsg(Process {});
-        let one_sec = Duration::from_secs(1);
-        let sys_time = SystemTime::now();
-        let mut times = 0;
-        loop {
-            let _ = stream.write_all(&(serialize(&msg).unwrap())[..]);
-            times += 1;
-            if sys_time.elapsed().unwrap() >= one_sec { break; }
-        }
-        println!("{}", times);
-    }
-
-
-    mod network {
-        extern crate tokio;
-        extern crate tokio_uds;
-        extern crate tempdir;
-
-        use tokio::prelude::*;
-        use tokio::net::TcpListener;
-        use tokio_uds::UnixListener;
-
-        use std::net::TcpStream;
-        use std::os::unix::net::UnixStream;
-        use std::net::SocketAddr;
-        use std::path::Path;
-
-        use self::tempdir::TempDir;
-
-        pub fn create_tcp_listener(socket_addr: &str) -> TcpListener {
-            let socket_addr = socket_addr.parse::<SocketAddr>().unwrap();
-            return TcpListener::bind(&socket_addr).unwrap();
-        }
-
-        pub fn create_uds_listener(socket_name: &str) -> UnixListener {
-            let socket_name = ["./", socket_name].join("");
-            let path = Path::new(&socket_name);
-            return UnixListener::bind(path).unwrap();
-        }
-
-        pub fn connect_tcp(socket_addr: &str) -> TcpStream {
-            let addr: SocketAddr = socket_addr.parse().unwrap();
-            return TcpStream::connect(&addr).unwrap();
-        }
-
-        pub fn connect_uds(socket_name: &str) -> UnixStream {
-            let socket_name = ["./", socket_name].join("");
-            let path = Path::new(&socket_name);
-            return UnixStream::connect(path).unwrap();
-        }
-    }
+        tokio::spawn(reader);
+        Ok(())
+    }).map_err(|e| {
+        println!("{:?}", e)
+    });
+    tokio::run(send);
 }
