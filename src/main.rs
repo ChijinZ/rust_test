@@ -17,16 +17,17 @@ use bytes::{BufMut, BytesMut};
 use std::env;
 
 fn main() {
-//    let a = env::args().skip(1).collect::<Vec<_>>();
-//    match a.first().unwrap().as_str() {
-//        "client" => client(),
-//        "server" => server(),
-//        _ => panic!("failed"),
-//    };
+    let a = env::args().skip(1).collect::<Vec<_>>();
+    match a.first().unwrap().as_str() {
+        "client" => client(),
+        "server" => server(),
+        _ => panic!("failed"),
+    };
 }
 
+
 struct MessageCodec {
-    vec_length: u32,// Length of the receive vector
+    vec_length: u64,// Length of the receive vector
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -54,14 +55,32 @@ impl MessageCodec {
         MessageCodec { vec_length: 0 }
     }
 
-    fn number_to_two_vecu8(num: u32, &mut vec: Vec<u8>) {
-        assert!(num >= (1 << 16));
-        let vec = vec![(num / 256) as u8, (num % 256) as u8];
+    pub fn number_to_four_vecu8(num: u64) -> Vec<u8> {
+        assert!(num < (1 << 32));
+        let mut result: Vec<u8> = vec![];
+        let mut x = num;
+        loop {
+            if x / 256 > 0 {
+                result.push((x % 256) as u8);
+                x = x / 256;
+            } else {
+                result.push((x % 256) as u8);
+                break;
+            }
+        }
+        for _ in 0..(4 - result.len()) {
+            result.push(0);
+        }
+        result.reverse();
+        return result;
     }
 
-    fn two_vecu8_to_number(vec: Vec<u8>, &mut num: u32) {
-        assert_eq!(vec.len(), 2);
-        let num = (vec[0] * 256 + vec[1]) as u32;
+
+    pub fn four_vecu8_to_number(vec: Vec<u8>) -> u64 {
+        assert_eq!(vec.len(), 4);
+        let num = vec[0] as u64 * 256 * 256 * 256 + vec[1] as u64 * 256 * 256
+            + vec[2] as u64 * 256 + vec[3] as u64;
+        return num;
     }
 }
 
@@ -69,9 +88,11 @@ impl Encoder for MessageCodec {
     type Item = Message;
     type Error = io::Error;
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let x = serialize(&item).unwrap();
-        let encoder =
-        let dst = BytesMut::from(x);
+        let mut temp = serialize(&item).unwrap();
+        let mut encoder: Vec<u8> = MessageCodec::number_to_four_vecu8(temp.len() as u64);
+        encoder.append(&mut temp);
+        // println!("{}",dst.remaining_mut());
+        dst.put(encoder);
         Ok(())
     }
 }
@@ -80,24 +101,67 @@ impl Decoder for MessageCodec {
     type Item = Message;
     type Error = io::Error;
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        Ok(deserialize(&src.to_vec()).unwrap())
+        if src.len() < 4 {
+            Ok(None)
+        } else {
+            let mut vec: Vec<u8> = src.to_vec();
+            let truth_data = vec.split_off(4);
+            let vec_length = MessageCodec::four_vecu8_to_number(vec);
+            // assert!(self.vec_length > 0);
+            if truth_data.len() == vec_length as usize {
+                let msg: Message = deserialize(&truth_data).unwrap();
+                src.take();
+                Ok(Some(msg))
+            } else {
+                Ok(None)
+            }
+        }
     }
-//    fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error>
-//    {}
 }
 
+struct MessageStream {
+    msg: Message,
+}
+
+impl Stream for MessageStream {
+    type Item = Message;
+    type Error = io::Error;
+    fn poll(&mut self) -> Result<Async<Option<Self::Item>>, Self::Error> {
+        Ok(Async::Ready(Some(self.msg.clone())))
+    }
+}
 
 fn server() {
     let socket_addr = "127.0.0.1:6666".parse::<std::net::SocketAddr>().unwrap();
     let listener = net::TcpListener::bind(&socket_addr).unwrap();
-//    let done = listener.incoming().for_each(|tcp_stream| {
-//        let framed = MessageStream.framed(tcp_stream);
-//        let (_writer, reader) = framed.split();
-//        reader.for_each();
-//    });
+    let done = listener.incoming().for_each(|tcp_stream| {
+        let framed = MessageCodec::new().framed(tcp_stream);
+        let (writer, reader) = framed.split();
+        let process = reader.for_each(|a| {
+            println!("{:?}", a);
+            Ok(())
+        }).map_err(|e| { println!("{:?}", e); });
+        tokio::spawn(process);
+        Ok(())
+    }).map_err(|e| { println!("{:?}", e); });
+    tokio::run(done);
 }
 
 fn client() {
     let addr = "127.0.0.1:6666".parse::<std::net::SocketAddr>().unwrap();
     let mut tcp_connect = net::TcpStream::connect(&addr);
+    let flatten_stream = tcp_connect.map(|mut tcp_stream| {
+        let (sink, stream) = MessageCodec::new().framed(tcp_stream).split();
+        let msg: Message = Message::seedMsg(Seed { x: 333 });
+        let send = sink.send_all(MessageStream { msg: msg}).map(|_| ())
+            .map_err(|e| { println!("{:?}", e); });
+        tokio::spawn(send);
+        //stream
+    }).map(|_| ()).map_err(|e| println!("{:?}", e));
+    //.flatten_stream();
+//    let done = flatten_stream.for_each(|receive_msg| {
+//        println!("{:?}", receive_msg);
+//        Ok(())
+//    }).map_err(|e| println!("{:?}", e));
+    tokio::run(flatten_stream);
 }
