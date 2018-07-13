@@ -9,11 +9,13 @@ extern crate bytes;
 use bincode::{deserialize, serialize};
 
 use tokio::prelude::*;
-use tokio::io;
+// use tokio::io;
 use tokio::net;
 use tokio_codec::*;
 use bytes::{BufMut, BytesMut};
+use futures::sync::mpsc;
 
+use std::io;
 use std::env;
 
 fn main() {
@@ -26,9 +28,7 @@ fn main() {
 }
 
 
-struct MessageCodec {
-    vec_length: u64,// Length of the receive vector
-}
+struct MessageCodec;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 enum Message {
@@ -52,7 +52,7 @@ struct Sate {
 
 impl MessageCodec {
     fn new() -> MessageCodec {
-        MessageCodec { vec_length: 0 }
+        MessageCodec {}
     }
 
     pub fn number_to_four_vecu8(num: u64) -> Vec<u8> {
@@ -119,26 +119,28 @@ impl Decoder for MessageCodec {
     }
 }
 
-struct MessageStream {
-    msg: Message,
-}
-
-impl Stream for MessageStream {
-    type Item = Message;
-    type Error = io::Error;
-    fn poll(&mut self) -> Result<Async<Option<Self::Item>>, Self::Error> {
-        Ok(Async::Ready(Some(self.msg.clone())))
-    }
-}
+//struct MessageStream {
+//    msg: Message,
+//}
+//
+//impl Stream for MessageStream {
+//    type Item = Message;
+//    type Error = io::Error;
+//    fn poll(&mut self) -> Result<Async<Option<Self::Item>>, Self::Error> {
+//        Ok(Async::Ready(Some(self.msg.clone())))
+//    }
+//}
 
 fn server() {
     let socket_addr = "127.0.0.1:6666".parse::<std::net::SocketAddr>().unwrap();
     let listener = net::TcpListener::bind(&socket_addr).unwrap();
+    // let (tx, rx): (mpsc::UnboundedSender<Message>, mpsc::UnboundedReceiver<Message>) = mpsc::unbounded();
     let done = listener.incoming().for_each(|tcp_stream| {
         let framed = MessageCodec::new().framed(tcp_stream);
         let (writer, reader) = framed.split();
-        let process = reader.for_each(|a| {
-            println!("{:?}", a);
+        // let (tx, rx) = futures::sync::mpsc::unbounded();
+        let process = reader.for_each(move |msg: Message| {
+            println!("{:?}", msg);
             Ok(())
         }).map_err(|e| { println!("{:?}", e); });
         tokio::spawn(process);
@@ -149,19 +151,38 @@ fn server() {
 
 fn client() {
     let addr = "127.0.0.1:6666".parse::<std::net::SocketAddr>().unwrap();
-    let mut tcp_connect = net::TcpStream::connect(&addr);
-    let flatten_stream = tcp_connect.map(|mut tcp_stream| {
-        let (sink, stream) = MessageCodec::new().framed(tcp_stream).split();
-        let msg: Message = Message::seedMsg(Seed { x: 333 });
-        let send = sink.send_all(MessageStream { msg: msg}).map(|_| ())
-            .map_err(|e| { println!("{:?}", e); });
-        tokio::spawn(send);
-        //stream
-    }).map(|_| ()).map_err(|e| println!("{:?}", e));
-    //.flatten_stream();
-//    let done = flatten_stream.for_each(|receive_msg| {
-//        println!("{:?}", receive_msg);
-//        Ok(())
-//    }).map_err(|e| println!("{:?}", e));
-    tokio::run(flatten_stream);
+    //let mut tcp_connect = net::TcpStream::connect(&addr);
+
+
+    let (mut tx, rx) = mpsc::channel(0);
+    let rx = rx.map_err(|_| panic!());
+    let done =connect_and_process(&addr,Box::new(rx));
+    tokio::run(done);
+}
+
+
+fn connect_and_process(addr: &std::net::SocketAddr,
+                       rx: Box<Stream<Item=Message, Error=io::Error> + Send>)
+                       -> Box<Future<Item=(), Error=()> + Send>
+{
+    let tcp = net::TcpStream::connect(addr);
+    Box::new(tcp.map(move |stream| {
+        let (sink, stream) = MessageCodec.framed(stream).split();
+
+        let send_to_server = rx.forward(sink).then(|result| {
+            if let Err(e) = result {
+                panic!("failed to write to socket: {}", e)
+            }
+            Ok(())
+        });
+        tokio::spawn(send_to_server);
+
+        let receive_and_process = stream.for_each(move |msg: Message| {
+            println!("{:?}", msg);
+            //tx.try_send(msg).unwrap();
+            Ok(())
+        }).map_err(|e| { println!("{:?}", e); });
+
+        tokio::spawn(receive_and_process);
+    }).map_err(|e| println!("{:?}", e)))
 }
