@@ -17,3 +17,10 @@ mio-named-pipes = "0.1.6"
 mio = "0.6"
 libc = "0.2"
 tokio-codec = "0.1.0"
+tokio-process = "0.2"
+msg-transmitter = "0.3"
+shared_memory = "0.8.0"
+memmap = "0.6.2"
+#
+#[lib]
+#crate-type = ["staticlib"]
